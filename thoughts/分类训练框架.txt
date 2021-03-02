@@ -1,0 +1,94 @@
+def train(model, train_iter, dev_iter, test_iter):
+    model.to(device)
+    model.train()
+    optimizer = optim.Adam(model.parameters())
+    #criterion = nn.CrossEntropyLoss()
+    criterion = nn.BCEWithLogitsLoss()
+    if use_cuda:
+        criterion.cuda()
+
+    # 学习率指数衰减，每次epoch：学习率 = gamma * 学习率
+    # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
+    dev_best_loss = float('inf')
+    last_improve = 0  # 记录上次验证集loss下降的batch数
+    #writer = SummaryWriter(log_dir=config.log_path + '/' + time.strftime('%m-%d.%H.%M', time.localtime())+'_'+which_data+'_'+which_model+'_'+which_task+'_'+exp_number)
+    
+    for epoch in range(max_epochs):
+        train_loss=0
+        train_correct=0
+        # scheduler.step() # 学习率衰减
+        for i, batch in enumerate(train_iter):
+            optimizer.zero_grad()
+            x,l=batch.text
+            y=batch.label
+            outputs = model(x,l).squeeze(1)
+            loss = criterion(outputs, y)
+            loss.backward()
+            optimizer.step()
+            #训练集的准确率
+            #preds = torch.max(outputs.data, 1)[1].cpu()
+            preds = torch.round(torch.sigmoid(outputs))
+            train_correct+=(y==preds).sum()
+            train_loss+=loss.item()
+        train_loss/=len(train_iterator)   #train_loss
+        train_acc=train_correct/len(train_iterator.dataset)   #train_acc
+            
+        #验证集
+        dev_acc, dev_loss = evaluate(model, dev_iter)
+        if dev_loss < dev_best_loss:
+            dev_best_loss = dev_loss
+            improve = '*'
+            last_improve=epoch
+        else:
+            improve = ''
+        msg = 'Epoch: {0:>6},  Train Loss: {1:>5.2},  Train Acc: {2:>6.2%},  Val Loss: {3:>5.2},  Val Acc: {4:>6.2%} {5}'
+        print(msg.format(epoch+1, train_loss, train_acc, dev_loss, dev_acc, improve))
+        #writer.add_scalar("loss/train", loss.item(), total_batch)
+        #writer.add_scalar("loss/dev", dev_loss, total_batch)
+        #writer.add_scalar("acc/train", train_acc, total_batch)
+        #writer.add_scalar("acc/dev", dev_acc, total_batch)
+
+        if epoch - last_improve > require_improvement:
+            # 验证集loss超过1epoch没下降，结束训练
+            print("No optimization for a long time, auto-stopping...")
+            break
+    #writer.close()
+    test(model, test_iter)
+
+def evaluate(model, data_iter, test=False):
+    model.eval()
+    loss_total = 0
+    predict_all = np.array([], dtype=int)
+    labels_all = np.array([], dtype=int)
+    with torch.no_grad():
+        for batch in data_iter:
+            x,l=batch.text
+            labels=batch.label
+            outputs = model(x,l).squeeze(1)
+            #loss = F.cross_entropy(outputs, labels)
+            loss=criterion(outputs,labels)
+            loss_total += loss.item()
+            labels = labels.data.cpu().numpy()
+            #predic = torch.max(outputs.data, 1)[1].cpu().numpy()
+            predic=torch.round(torch.sigmoid(outputs)).cpu().numpy()
+            labels_all = np.append(labels_all, labels)
+            predict_all = np.append(predict_all, predic)
+    model.train()
+    acc = metrics.accuracy_score(labels_all, predict_all)
+    
+    if test:
+        report = metrics.classification_report(labels_all, predict_all, labels=[0,1],target_names=['pos','neg'], digits=4,output_dict=True)
+        confusion = metrics.confusion_matrix(labels_all, predict_all)
+        return acc, loss_total / len(data_iter), report, confusion
+    
+    return acc, loss_total / len(data_iter)
+
+
+def test(model, test_iter):
+    test_acc, test_loss, test_report, test_confusion = evaluate(model, test_iter, test=True)
+    msg = 'Test Loss: {0:>5.2},  Test Acc: {1:>6.2%}'
+    print(msg.format(test_loss, test_acc))
+    print("Precision, Recall and F1-Score...")
+    print(test_report)
+    print("Confusion Matrix...")
+    print(test_confusion)
